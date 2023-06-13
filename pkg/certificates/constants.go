@@ -42,6 +42,8 @@ const (
 	SecretCertKey = "public-cert.pem"
 	// #nosec
 	SecretPKKey = "private-key.pem"
+
+	CASecretNamePostfix = "-ctrl-ca"
 )
 
 // DataPlaneRoutingName constructs a san for a data-plane-routing certificate

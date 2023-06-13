@@ -66,6 +66,10 @@ const (
 	// Certificate reconciler.
 	CertManagerCertificateClassName = "cert-manager.certificate.networking.knative.dev"
 
+	// KnativeInternalCertificateClassName value for specifying Knative's internal, self-signed
+	// Certificate reconciler.
+	KnativeInternalCertificateClassName = "knative-internal.certificate.networking.knative.dev"
+
 	// ServingInternalCertName is the name of secret contains certificates in serving
 	// system namespace.
 	//
