@@ -29,13 +29,9 @@ const (
 
 	createdEventReason        = "Created"
 	creationFailedEventReason = "CreationFailed"
-	creationFailed            = "failed to create certificate %w"
-	creationFailedDetails     = "Failed to create certificate for the KnativeCertificate %s/%s. "
 
 	updatedEventReason      = "Updated"
 	updateFailedEventReason = "UpdateFailed"
-	updateFailed            = "failed to update certificate %w"
-	updateFailedDetails     = "Failed to update certificate for the KnativeCertificate %s/%s. "
 
 	expirationInterval = time.Hour * 24 * 90 // 90 days (aligned with Let's encrypt)
 	rotationThreshold  = time.Hour * 24 * 30 // 30 days (aligned with Let's encrypt)
@@ -81,25 +77,23 @@ func (r *reconciler) reconcile(ctx context.Context, knCert *v1alpha1.Certificate
 	// Get and parse CA
 	caSecret, err := r.secretLister.Secrets(system.Namespace()).Get(r.caSecretName)
 	if err != nil {
-		recorder.Eventf(knCert, corev1.EventTypeWarning, creationFailedEventReason,
-			creationFailedDetails+"The CA does not yet exist.",
-			knCert.Namespace, knCert.Name)
-		return fmt.Errorf(creationFailed, err)
+		msg := fmt.Sprintf("failed to create certificate %s/%s. The CA does not yet exist.", knCert.Namespace, knCert.Name)
+		recorder.Eventf(knCert, corev1.EventTypeWarning, creationFailedEventReason, msg)
+		return fmt.Errorf(msg+" error: %w", err)
 	}
 	caCert, caKey, err := parseCertFromSecret(caSecret)
 	if err != nil {
-		recorder.Eventf(knCert, corev1.EventTypeWarning, creationFailedEventReason,
-			creationFailedDetails+"The CA is invalid.",
-			knCert.Namespace, knCert.Name)
-		return fmt.Errorf(creationFailed, err)
+		msg := fmt.Sprintf("failed to create certificate %s/%s. The CA is invalid.", knCert.Namespace, knCert.Name)
+		recorder.Eventf(knCert, corev1.EventTypeWarning, creationFailedEventReason, msg)
+		return fmt.Errorf(msg+" error: %w", err)
 	}
 
 	// Create the desired secret
 	desiredCert, err := certificates.CreateCert(caKey, caCert, expirationInterval, knCert.Spec.DNSNames...)
 	if err != nil {
-		recorder.Eventf(knCert, corev1.EventTypeWarning, creationFailedEventReason,
-			creationFailedDetails+"Could not create the desired service certificate.", knCert.Namespace, knCert.Name)
-		return fmt.Errorf(creationFailed, err)
+		msg := fmt.Sprintf("failed to create desired certificate %s/%s.", knCert.Namespace, knCert.Name)
+		recorder.Eventf(knCert, corev1.EventTypeWarning, creationFailedEventReason, msg)
+		return fmt.Errorf(msg+" error: %w", err)
 	}
 
 	desiredSecret := resources.MakeSecret(knCert, desiredCert, caSecret.Data[certificates.SecretCertKey], r.labelName)
@@ -109,37 +103,36 @@ func (r *reconciler) reconcile(ctx context.Context, knCert *v1alpha1.Certificate
 	if apierrs.IsNotFound(err) {
 		newCertSecret, err := r.client.CoreV1().Secrets(knCert.Namespace).Create(ctx, desiredSecret, metav1.CreateOptions{})
 		if err != nil {
-			recorder.Eventf(knCert, corev1.EventTypeWarning, creationFailedEventReason,
-				creationFailedDetails+"Creating secret %s/%s failed.",
-				knCert.Namespace, knCert.Name, desiredSecret.Namespace, desiredSecret.Name)
-			return fmt.Errorf("failed to secret %w", err)
+			msg := fmt.Sprintf("failed to create secret %s/%s.", desiredSecret.Namespace, desiredSecret.Name)
+			recorder.Eventf(knCert, corev1.EventTypeWarning, creationFailedEventReason, msg)
+			return fmt.Errorf(msg+" error: %w", err)
 		}
 
 		recorder.Eventf(newCertSecret, corev1.EventTypeNormal, createdEventReason,
-			"Created Certificate in Secret for KnativeCertificate %s/%s", knCert.Namespace, knCert.Name)
+			"Created certificate in secret %s/%s for KnativeCertificate %s/%s",
+			newCertSecret.Namespace, newCertSecret.Name, knCert.Namespace, knCert.Name)
 
 		if err = r.enqueueBeforeExpiration(newCertSecret); err != nil {
 			return err
 		}
 
 	} else if err != nil {
-		recorder.Eventf(knCert, corev1.EventTypeWarning, creationFailedEventReason,
-			creationFailedDetails,
-			knCert.Namespace, knCert.Name)
-		return fmt.Errorf("failed to get existing secret %w", err)
+		msg := fmt.Sprintf("failed to get existing secret %s/%s.", knCert.Namespace, knCert.Spec.SecretName)
+		recorder.Eventf(knCert, corev1.EventTypeWarning, creationFailedEventReason, msg)
+		return fmt.Errorf(msg+" error: %w", err)
 	} else {
-		existingCert, _, err := parseCertFromSecret(existingCertSecret)
 		updateCert := false
+		existingCert, _, err := parseCertFromSecret(existingCertSecret)
 		if err != nil {
-			recorder.Eventf(knCert, corev1.EventTypeWarning, updateFailedEventReason,
-				updateFailedDetails+"The existing certificate is invalid.",
-				knCert.Namespace, knCert.Name)
+			recorder.Eventf(knCert, corev1.EventTypeWarning, updatedEventReason,
+				"The existing certificate in secret %s/%s is invalid. It will be replaced by a new one.",
+				existingCertSecret.Namespace, existingCertSecret.Name)
 			updateCert = true
 		}
 
 		if err := certificates.CheckExpiry(existingCert, rotationThreshold); err != nil {
-			recorder.Eventf(knCert, corev1.EventTypeNormal, updateFailedEventReason,
-				"KnativeCertificate %s/%s is above the rotation threshold of %v days. Certificate will be renewed",
+			recorder.Eventf(knCert, corev1.EventTypeNormal, updatedEventReason,
+				"Certificate for KnativeCertificate %s/%s is above the rotation threshold of %v days. It will be renewed.",
 				knCert.Namespace, knCert.Name, rotationThreshold)
 			updateCert = true
 		}
@@ -151,17 +144,16 @@ func (r *reconciler) reconcile(ctx context.Context, knCert *v1alpha1.Certificate
 			secret.Labels = desiredSecret.Labels
 			secret.Data = desiredSecret.Data
 
-			updatedCertSecret, err := r.client.CoreV1().Secrets(knCert.Namespace).Update(ctx, secret, metav1.UpdateOptions{})
+			updatedCertSecret, err := r.client.CoreV1().Secrets(secret.Namespace).Update(ctx, secret, metav1.UpdateOptions{})
 			if err != nil {
-				recorder.Eventf(knCert, corev1.EventTypeWarning, updateFailedEventReason,
-					updateFailedDetails+"The existing certificate is invalid.",
-					knCert.Namespace, knCert.Name)
-				return fmt.Errorf(updateFailed, err)
+				msg := fmt.Sprintf("failed to update existing secret %s/%s.", secret.Namespace, secret.Name)
+				recorder.Eventf(knCert, corev1.EventTypeWarning, updateFailedEventReason, msg)
+				return fmt.Errorf(msg+" error: %w", err)
 			}
 
 			recorder.Eventf(knCert, corev1.EventTypeNormal, updatedEventReason,
-				"Updated Certificate in Secret for KnativeCertificate %s/%s",
-				knCert.Namespace, knCert.Name)
+				"Successfully updated certificate in secret %s/%s for KnativeCertificate %s/%s",
+				secret.Namespace, secret.Name, knCert.Namespace, knCert.Name)
 
 			if err = r.enqueueBeforeExpiration(updatedCertSecret); err != nil {
 				return err

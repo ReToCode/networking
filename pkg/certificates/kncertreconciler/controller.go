@@ -22,10 +22,6 @@ import (
 	filteredFactory "knative.dev/pkg/client/injection/kube/informers/factory/filtered"
 )
 
-const (
-	secretLabelNamePostfix = "-knative-issuer"
-)
-
 // NewControllerFactory generates a ControllerConstructor for the Knative certificate issuer controller
 // and registers event handlers to enqueue events.
 func NewControllerFactory(componentName string) injection.ControllerConstructor {
@@ -35,7 +31,7 @@ func NewControllerFactory(componentName string) injection.ControllerConstructor 
 		logger := logging.FromContext(ctx)
 		knCertificateInformer := kcertinformer.Get(ctx)
 
-		labelName := componentName + secretLabelNamePostfix
+		labelName := componentName + certificates.KnativeIssuerSecretNamePostfix
 		caSecretName := componentName + certificates.CASecretNamePostfix
 
 		ctx = filteredFactory.WithSelectors(ctx, labelName)
