@@ -70,12 +70,12 @@ func (r *reconciler) reconcile(ctx context.Context, knCert *v1alpha1.Certificate
 
 	knCert.SetDefaults(ctx)
 	knCert.Status.InitializeConditions()
-
-	logger.Info("Reconciling KnativeCertificate with Knatives internal certificate provider.")
 	knCert.Status.ObservedGeneration = knCert.Generation
 
+	logger.Info("Reconciling KnativeCertificate with Knatives internal certificate provider.")
+
 	// Get and parse CA
-	caSecret, err := r.secretLister.Secrets(system.Namespace()).Get(r.caSecretName)
+	caSecret, err := r.client.CoreV1().Secrets(system.Namespace()).Get(ctx, r.caSecretName, metav1.GetOptions{})
 	if err != nil {
 		msg := fmt.Sprintf("failed to create certificate %s/%s. The CA does not yet exist.", knCert.Namespace, knCert.Name)
 		recorder.Eventf(knCert, corev1.EventTypeWarning, creationFailedEventReason, msg)

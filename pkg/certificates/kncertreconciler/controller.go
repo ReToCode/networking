@@ -46,7 +46,7 @@ func NewControllerFactory(componentName string) injection.ControllerConstructor 
 
 		classFilterFunc := pkgreconciler.AnnotationFilterFunc(netapi.CertificateClassAnnotationKey, netcfg.KnativeInternalCertificateClassName, true)
 
-		impl := certreconciler.NewImpl(ctx, c, netcfg.CertManagerCertificateClassName,
+		impl := certreconciler.NewImpl(ctx, c, netcfg.KnativeInternalCertificateClassName,
 			func(impl *controller.Impl) controller.Options {
 				// Trigger full re-sync on config-network CM change
 				configsToResync := []interface{}{
