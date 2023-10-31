@@ -46,7 +46,7 @@ func NewControllerFactory(componentName string) injection.ControllerConstructor 
 	) *controller.Impl {
 
 		caSecretName := componentName + certificates.SystemInternalTLSCASecretNamePostfix
-		labelName := componentName + certificates.SystemInternalTLSCASecretNamePostfix
+		labelName := componentName + certificates.SystemInternalTLSSecretLabelPostfix
 
 		ctx = filteredFactory.WithSelectors(ctx, labelName)
 		secretInformer := getSecretInformer(ctx)

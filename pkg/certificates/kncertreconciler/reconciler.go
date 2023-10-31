@@ -2,7 +2,6 @@ package kncertreconciler
 
 import (
 	"context"
-	"crypto/rsa"
 	"crypto/x509"
 	"fmt"
 	"time"
@@ -33,8 +32,9 @@ const (
 	updatedEventReason      = "Updated"
 	updateFailedEventReason = "UpdateFailed"
 
-	expirationInterval = time.Hour * 24 * 90 // 90 days (aligned with Let's encrypt)
-	rotationThreshold  = time.Hour * 24 * 30 // 30 days (aligned with Let's encrypt)
+	caExpirationInterval = time.Hour * 24 * 365 * 10 // 10 years
+	expirationInterval   = time.Hour * 24 * 90       // 90 days (aligned with Let's encrypt)
+	rotationThreshold    = time.Hour * 24 * 30       // 30 days (aligned with Let's encrypt)
 )
 
 // Reconciler implements controller.Reconciler for Knative Certificate resources.
@@ -72,7 +72,7 @@ func (r *reconciler) reconcile(ctx context.Context, knCert *v1alpha1.Certificate
 	knCert.Status.InitializeConditions()
 	knCert.Status.ObservedGeneration = knCert.Generation
 
-	logger.Info("Reconciling KnativeCertificate with Knatives internal certificate issuer.")
+	logger.Infof("Reconciling KnativeCertificate %s/%s with Knatives internal certificate issuer.", knCert.Namespace, knCert.Name)
 
 	// Get and parse CA
 	caSecret, err := r.client.CoreV1().Secrets(system.Namespace()).Get(ctx, r.caSecretName, metav1.GetOptions{})
@@ -81,11 +81,31 @@ func (r *reconciler) reconcile(ctx context.Context, knCert *v1alpha1.Certificate
 		recorder.Eventf(knCert, corev1.EventTypeWarning, creationFailedEventReason, msg)
 		return fmt.Errorf(msg+" error: %w", err)
 	}
-	caCert, caKey, err := parseCertFromSecret(caSecret)
+	caCert, caKey, err := certificates.ParseAndValidateCertFromSecret(caSecret, nil, rotationThreshold)
 	if err != nil {
-		msg := fmt.Sprintf("failed to create certificate %s/%s. The CA is invalid.", knCert.Namespace, knCert.Name)
-		recorder.Eventf(knCert, corev1.EventTypeWarning, creationFailedEventReason, msg)
-		return fmt.Errorf(msg+" error: %w", err)
+		logger.Infof("CA certificate is invalid or expired, creating a new self-signed CA")
+
+		keyPair, err := certificates.CreateCACerts(caExpirationInterval)
+		if err != nil {
+			msg := "failed to create a new CA certificate"
+			recorder.Eventf(knCert, corev1.EventTypeWarning, creationFailedEventReason, msg)
+			return fmt.Errorf(msg+" error: %w", err)
+		}
+
+		// Update CA secret
+		s := caSecret.DeepCopy() // Don't modify the informer copy.
+		s.Data = make(map[string][]byte, 3)
+		s.Data[certificates.CertName] = keyPair.CertBytes()
+		s.Data[certificates.PrivateKeyName] = keyPair.PrivateKeyBytes()
+		_, err = r.client.CoreV1().Secrets(caSecret.Namespace).Update(ctx, s, metav1.UpdateOptions{})
+		if err != nil {
+			msg := fmt.Sprintf("failed to update existing secret %s/%s.", caSecret.Namespace, caSecret.Name)
+			recorder.Eventf(knCert, corev1.EventTypeWarning, updateFailedEventReason, msg)
+			return fmt.Errorf(msg+" error: %w", err)
+		}
+
+		// The CA update will re-trigger a reconcile for all our KnativeCertificates, so we can exit here
+		return nil
 	}
 
 	// Create the desired secret
@@ -94,6 +114,11 @@ func (r *reconciler) reconcile(ctx context.Context, knCert *v1alpha1.Certificate
 		msg := fmt.Sprintf("failed to create desired certificate %s/%s.", knCert.Namespace, knCert.Name)
 		recorder.Eventf(knCert, corev1.EventTypeWarning, creationFailedEventReason, msg)
 		return fmt.Errorf(msg+" error: %w", err)
+	}
+
+	desiredCertParsed, _, err := desiredCert.Parse()
+	if err != nil {
+		return err
 	}
 
 	desiredSecret := resources.MakeSecret(knCert, desiredCert, caSecret.Data[certificates.CertName], r.labelName)
@@ -112,32 +137,22 @@ func (r *reconciler) reconcile(ctx context.Context, knCert *v1alpha1.Certificate
 			"Created certificate in secret %s/%s for KnativeCertificate %s/%s",
 			newCertSecret.Namespace, newCertSecret.Name, knCert.Namespace, knCert.Name)
 
-		if err = r.enqueueBeforeExpiration(newCertSecret); err != nil {
-			return err
-		}
+		r.enqueueBeforeAfterRotationThreshold(newCertSecret, desiredCertParsed)
 
 	} else if err != nil {
 		msg := fmt.Sprintf("failed to get existing secret %s/%s.", knCert.Namespace, knCert.Spec.SecretName)
 		recorder.Eventf(knCert, corev1.EventTypeWarning, creationFailedEventReason, msg)
 		return fmt.Errorf(msg+" error: %w", err)
+
 	} else {
-		updateCert := false
-		existingCert, _, err := parseCertFromSecret(existingCertSecret)
+		existingCert, _, err := certificates.ParseAndValidateCertFromSecret(existingCertSecret,
+			caSecret.Data[certificates.CertName], rotationThreshold, knCert.Spec.DNSNames...)
+
 		if err != nil {
 			recorder.Eventf(knCert, corev1.EventTypeWarning, updatedEventReason,
-				"The existing certificate in secret %s/%s is invalid. It will be replaced by a new one.",
+				"The existing certificate in secret %s/%s is invalid or about to expire. It will be replaced by a new one.",
 				existingCertSecret.Namespace, existingCertSecret.Name)
-			updateCert = true
-		}
 
-		if err := certificates.CheckExpiry(existingCert, rotationThreshold); err != nil {
-			recorder.Eventf(knCert, corev1.EventTypeNormal, updatedEventReason,
-				"Certificate for KnativeCertificate %s/%s is above the rotation threshold of %v days. It will be renewed.",
-				knCert.Namespace, knCert.Name, rotationThreshold)
-			updateCert = true
-		}
-
-		if updateCert {
 			// Don't modify the informer copy.
 			secret := existingCertSecret.DeepCopy()
 			secret.Annotations = desiredSecret.Annotations
@@ -155,51 +170,22 @@ func (r *reconciler) reconcile(ctx context.Context, knCert *v1alpha1.Certificate
 				"Successfully updated certificate in secret %s/%s for KnativeCertificate %s/%s",
 				secret.Namespace, secret.Name, knCert.Namespace, knCert.Name)
 
-			if err = r.enqueueBeforeExpiration(updatedCertSecret); err != nil {
-				return err
-			}
+			r.enqueueBeforeAfterRotationThreshold(updatedCertSecret, desiredCertParsed)
 		} else {
-			if err = r.enqueueBeforeExpiration(existingCertSecret); err != nil {
-				return err
-			}
+			// Certificate is valid and not expired. So, nothing to do except to re-enqueue before expiration
+			r.enqueueBeforeAfterRotationThreshold(existingCertSecret, existingCert)
 		}
-
-		return nil
 	}
 
+	knCert.Status.MarkReady()
 	return nil
 }
 
-func (r *reconciler) enqueueBeforeExpiration(secret *corev1.Secret) error {
-	cert, _, err := parseCertFromSecret(secret)
-	if err != nil {
-		return err
-	}
-
+func (r *reconciler) enqueueBeforeAfterRotationThreshold(secret *corev1.Secret, cert *x509.Certificate) {
 	// Enqueue after the rotation threshold
 	when := cert.NotAfter.Add(-rotationThreshold).Add(1 * time.Second)
 	r.enqueueAfter(types.NamespacedName{
 		Namespace: secret.Namespace,
 		Name:      secret.Name,
 	}, time.Until(when))
-
-	return nil
-}
-
-func parseCertFromSecret(secret *corev1.Secret) (*x509.Certificate, *rsa.PrivateKey, error) {
-	certBytes, ok := secret.Data[certificates.CertName]
-	if !ok {
-		return nil, nil, fmt.Errorf("missing cert bytes")
-	}
-	pkBytes, ok := secret.Data[certificates.PrivateKeyName]
-	if !ok {
-		return nil, nil, fmt.Errorf("missing pk bytes")
-	}
-
-	cert, caPk, err := certificates.ParseCert(certBytes, pkBytes)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return cert, caPk, nil
 }

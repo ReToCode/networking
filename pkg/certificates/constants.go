@@ -51,12 +51,12 @@ const (
 	SecretPKKey = "private-key.pem"
 
 	// These keys define the postfix for CA and secrets to reconcile labels for system-internal-tls.
-	SystemInternalTLSCASecretNamePostfix    = "-ctrl-ca"
-	SystemInternalTLSSecretLabelNamePostfix = "-ctrl"
+	SystemInternalTLSCASecretNamePostfix = "-ctrl-ca"
+	SystemInternalTLSSecretLabelPostfix  = "-ctrl"
 
 	// These keys define the postfix for the CA and secret labels for cluster-local-domain-tls with Knative's self-signed issuer.
-	KnativeCertIssuerCASecretNamePostfix    = "-cluster-local-domain-ca"
-	KnativeCertIssuerSecretLabelNamePostfix = "-knative-issuer"
+	KnativeCertIssuerCASecretNamePostfix = "-cluster-local-domain-ca"
+	KnativeCertIssuerSecretLabelPostfix  = "-knative-issuer"
 )
 
 // DataPlaneUserSAN constructs a SAN for a data-plane-user certificate in the

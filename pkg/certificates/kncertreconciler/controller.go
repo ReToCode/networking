@@ -14,6 +14,7 @@ import (
 	"knative.dev/pkg/injection"
 	"knative.dev/pkg/logging"
 	pkgreconciler "knative.dev/pkg/reconciler"
+	"knative.dev/pkg/system"
 
 	netapi "knative.dev/networking/pkg/apis/networking"
 	kcertinformer "knative.dev/networking/pkg/client/injection/informers/networking/v1alpha1/certificate"
@@ -32,7 +33,7 @@ func NewControllerFactory(componentName string) injection.ControllerConstructor 
 		knCertificateInformer := kcertinformer.Get(ctx)
 
 		caSecretName := componentName + certificates.KnativeCertIssuerCASecretNamePostfix
-		labelName := componentName + certificates.KnativeCertIssuerSecretLabelNamePostfix
+		labelName := componentName + certificates.KnativeCertIssuerSecretLabelPostfix
 
 		ctx = filteredFactory.WithSelectors(ctx, labelName)
 		secretInformer := getSecretInformer(ctx)
@@ -62,15 +63,17 @@ func NewControllerFactory(componentName string) injection.ControllerConstructor 
 
 		c.enqueueAfter = impl.EnqueueKeyAfter
 
-		// Handle all Knative Certificate changes that match our certificate-class.
-		knCertificateInformer.Informer().AddEventHandler(cache.FilteringResourceEventHandler{
-			FilterFunc: classFilterFunc,
-			Handler:    controller.HandleAll(impl.Enqueue),
+		// If the CA secret changes, global resync
+		secretInformer.Informer().AddEventHandler(cache.FilteringResourceEventHandler{
+			FilterFunc: controller.FilterWithNameAndNamespace(system.Namespace(), caSecretName),
+			Handler: controller.HandleAll(func(i interface{}) {
+				impl.FilteredGlobalResync(classFilterFunc, knCertificateInformer.Informer())
+			}),
 		})
 
-		// Handle all Secret changes when our label is present
-		secretInformer.Informer().AddEventHandler(cache.FilteringResourceEventHandler{
-			FilterFunc: pkgreconciler.LabelExistsFilterFunc(labelName),
+		// Handle all KnativeCertificate changes that match our certificate-class.
+		knCertificateInformer.Informer().AddEventHandler(cache.FilteringResourceEventHandler{
+			FilterFunc: classFilterFunc,
 			Handler:    controller.HandleAll(impl.Enqueue),
 		})
 
